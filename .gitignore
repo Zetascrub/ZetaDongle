@@ -1,0 +1,5 @@
+# PlatformIO build cache and downloaded deps
+.pio/
+# Editor / OS
+.vscode/
+.DS_Store
