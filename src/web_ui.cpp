@@ -9,12 +9,6 @@
 namespace reconclave {
 namespace {
 
-// Fixed, documented default (README.md) - this is a standalone/offline field
-// tool, not something joining a shared network, so the AP passphrase itself
-// is the whole access-control boundary. Change it here (and reflash) for a
-// deployment where that's not an acceptable default.
-constexpr const char* kApPassword = "TinkerHackFlash";
-
 // Whole-request-body cap: the largest legitimate payload is a save (name +
 // script text), so this is ScriptStore::kMaxScriptBytes plus slack for the
 // JSON wrapper/name field - matching devices/cardputer-adv's main.cpp's own
@@ -144,18 +138,12 @@ void handleNotFound() {
 
 }  // namespace
 
-void WebUi::begin(ScriptStore& store) {
+void WebUi::begin(ScriptStore& store, const String& ap_ssid) {
   g_store = &store;
+  ap_ssid_ = ap_ssid;  // AP is already up (RadioManager owns it).
 
-  WiFi.mode(WIFI_AP);
-  String mac = WiFi.softAPmacAddress();
-  mac.replace(":", "");
-  const String suffix = mac.substring(mac.length() - 4);
-  ap_ssid_ = "Zeta-Dongle-" + suffix;
-  WiFi.softAP(ap_ssid_.c_str(), kApPassword);
-
-  Serial.printf("web_ui: AP \"%s\" up, password \"%s\", browse to http://%s/\n",
-                ap_ssid_.c_str(), kApPassword, WiFi.softAPIP().toString().c_str());
+  Serial.printf("web_ui: serving on AP \"%s\" at http://%s/\n", ap_ssid_.c_str(),
+                WiFi.softAPIP().toString().c_str());
 
   g_server.on("/", HTTP_GET, handleRoot);
   g_server.on("/api/status", HTTP_GET, handleStatus);

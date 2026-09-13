@@ -14,9 +14,10 @@ namespace reconclave {
 
 class WebUi {
  public:
-  // Brings up the AP and starts the HTTP server. `store` must outlive the
-  // WebUi instance - handlers hold a reference to it, not a copy.
-  void begin(ScriptStore& store);
+  // Starts the HTTP server on the already-running AP (brought up by
+  // RadioManager). `store` must outlive the WebUi instance - handlers hold a
+  // reference to it, not a copy. `ap_ssid` is used only for display/reporting.
+  void begin(ScriptStore& store, const String& ap_ssid);
 
   // Must be called every loop() iteration (WebServer is not interrupt-driven).
   void handleClient();
