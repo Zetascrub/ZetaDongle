@@ -1,0 +1,93 @@
+name: Release
+
+# Tag-triggered example-firmware release. This does NOT build a deployable
+# fleet node: it compiles against config/generated_trust.ci.h, the disposable
+# all-zero CI trust stand-in ("never provision hardware with this file" /
+# "must never be flashed" as fleet trust), the same fixture already used by
+# ci.yml. The resulting binary cannot authenticate against a real Reconclave
+# fleet, network HID stays fail-closed, and its evidence-encryption key is
+# public knowledge, so it is safe to publish. It exists so anyone can flash a
+# T-Dongle-S3, see the base app boot, and then provision it for real with
+# tools/provision_fleet.py from the Reconclave repo. See
+# https://github.com/Zetascrub/Reconclave/blob/main/docs/releasing.md
+# ("Public example firmware" section) for the policy this implements.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      PIO_ENV: t_dongle_s3
+      ASSET_PREFIX: reconclave-zetadongle
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Use disposable CI trust stand-in (unprovisioned example build)
+        run: cp config/generated_trust.ci.h src/generated_trust.h
+
+      - run: pip install platformio esptool
+
+      - name: Build firmware
+        run: pio run -e "$PIO_ENV"
+
+      - name: Merge into a single flashable image
+        run: |
+          set -euo pipefail
+          BUILD_DIR=".pio/build/$PIO_ENV"
+          BOOT_APP0=$(find "$HOME/.platformio/packages" -maxdepth 4 -name boot_app0.bin -path '*framework-arduinoespressif32*' | head -1)
+          test -f "$BOOT_APP0"
+          esptool --chip esp32s3 merge-bin \
+            -o "$BUILD_DIR/merged-flash.bin" \
+            --flash-mode keep --flash-freq keep --flash-size keep \
+            0x0 "$BUILD_DIR/bootloader.bin" \
+            0x8000 "$BUILD_DIR/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD_DIR/firmware.bin"
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          BUILD_DIR=".pio/build/$PIO_ENV"
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          cp "$BUILD_DIR/firmware.bin"     "dist/${ASSET_PREFIX}-${VERSION}-firmware.bin"
+          cp "$BUILD_DIR/firmware.elf"     "dist/${ASSET_PREFIX}-${VERSION}-firmware.elf"
+          cp "$BUILD_DIR/merged-flash.bin" "dist/${ASSET_PREFIX}-${VERSION}-merged-flash.bin"
+          ( cd dist && sha256sum -- * > SHA256SUMS )
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/notes.md <<'EOF'
+          **Unprovisioned example build.** Compiled against the disposable CI
+          trust stand-in (`config/generated_trust.ci.h`): all-zero HMAC and
+          storage keys, `ci-*` placeholder peer IDs. It will boot and run the
+          base T-Dongle-S3 app (local button-fired payloads, Wi-Fi setup/status
+          web UI), but it will NOT authenticate against a real Reconclave
+          fleet — network HID input stays fail-closed — and its
+          evidence-encryption key is public.
+
+          Flash it to verify the device, then provision real per-device trust
+          with `tools/provision_fleet.py` from the
+          [Reconclave](https://github.com/Zetascrub/Reconclave) repo before
+          deploying against a live coordinator. See
+          [docs/releasing.md](https://github.com/Zetascrub/Reconclave/blob/main/docs/releasing.md).
+
+          `merged-flash.bin` flashes in one shot at offset `0x0`
+          (`esptool --chip esp32s3 write-flash 0x0 merged-flash.bin`).
+          `firmware.bin`/`firmware.elf` are the standalone app image and its
+          debug symbols.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "ZetaDongle $GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.md

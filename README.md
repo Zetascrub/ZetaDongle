@@ -161,13 +161,21 @@ letters, digits, hyphens, or underscores; bodies and files have size limits.
 
 Provisioned collective builds require an ignored `src/generated_trust.h` with
 the `rc_provisioned_peer_t` entries authorised for this dongle. The zero-key
-file under `config/` is strictly a CI compile fixture and must never be flashed.
+file under `config/` is strictly a compile fixture and must never be treated as
+fleet trust — flashing it produces a device that fails closed against every
+authenticated remote action, useful only to confirm the base app boots.
 Standalone operation may use a locally generated deployment header while remote
 actions remain fail-closed.
 
 ```sh
 pio run
 ```
+
+Pushing a version tag (`vX.Y.Z`) runs [release.yml](.github/workflows/release.yml),
+which builds against that same zero-key stand-in and publishes it as a GitHub
+Release — an **unprovisioned example build** you flash and then provision for
+real, not a deployable fleet node. See
+[docs/releasing.md](https://github.com/Zetascrub/Reconclave/blob/main/docs/releasing.md#public-example-firmware-dummy-trust-ci-builds).
 
 Current footprint is approximately 18% RAM and 15% application flash. Bench
 verification is still required for display orientation, persistence, AP/STA
