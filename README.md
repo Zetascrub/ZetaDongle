@@ -1,7 +1,26 @@
+<div align="center">
+
+<img src="assets/zeta.png" alt="Zeta, the Reconclave mascot" width="140">
+
 # ZetaDongle
+
+### Pocket payloads. Physical intent. Fleet-aware.
+
+[![Hardware](https://img.shields.io/badge/hardware-LILYGO_T--Dongle--S3-0e222e?style=flat-square)](#capability-matrix)
+[![Build](https://img.shields.io/badge/build-PlatformIO-00cdd7?style=flat-square)](#build)
+[![Status](https://img.shields.io/badge/status-development_preview-ffaa1c?style=flat-square)](#capability-matrix)
+[![Family](https://img.shields.io/badge/family-Reconclave-fff2d7?style=flat-square)](https://github.com/Zetascrub/Reconclave)
 
 **A pocket-sized USB automation tool and Reconclave node for LILYGO
 T-Dongle-S3.**
+
+[Reconclave](https://github.com/Zetascrub/Reconclave) ·
+[FieldDeck](https://github.com/Zetascrub/FieldDeck) ·
+[Relay](https://github.com/Zetascrub/Relay) ·
+[Sightline](https://github.com/Zetascrub/Sightline) ·
+[Command](https://github.com/Zetascrub/Reconclave-Command)
+
+</div>
 
 ZetaDongle works on its own as a physically triggered payload device with local
 storage, loot management, SD-backed USB mass storage, and a browser-based
