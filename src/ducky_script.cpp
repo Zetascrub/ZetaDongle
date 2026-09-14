@@ -130,12 +130,53 @@ bool pressComboLine(const std::vector<String>& tokens, USBHIDKeyboard& keyboard,
 
 struct Executor {
   USBHIDKeyboard& keyboard;
+  std::vector<std::pair<String, String>> variables;
   unsigned long default_delay_ms = 0;
   unsigned long started_at_ms = 0;
   int steps_run = 0;
 
   bool timeBudgetExceeded() const {
     return millis() - started_at_ms > kDuckyMaxTotalRuntimeMs;
+  }
+
+  bool defineVariable(const String& source, String& error_out) {
+    const int separator = source.indexOf(' ');
+    if (separator <= 0) { error_out = "DEFINE needs a name and value"; return false; }
+    const String name = source.substring(0, separator);
+    if (name.length() > 24) { error_out = "variable name exceeds 24 characters"; return false; }
+    for (size_t i = 0; i < name.length(); ++i) {
+      const char c = name[i];
+      if (!(isalnum(static_cast<unsigned char>(c)) || c == '_')) {
+        error_out = "variable names use letters, digits, or underscore"; return false;
+      }
+    }
+    const String value = source.substring(separator + 1);
+    for (auto& item : variables) {
+      if (item.first == name) { item.second = value; return true; }
+    }
+    if (variables.size() >= kDuckyMaxVariables) { error_out = "too many variables"; return false; }
+    variables.push_back({name, value});
+    return true;
+  }
+
+  bool expandVariables(String& text, String& error_out) const {
+    int cursor = 0;
+    while ((cursor = text.indexOf("{{", cursor)) >= 0) {
+      const int end = text.indexOf("}}", cursor + 2);
+      if (end < 0) { error_out = "unterminated variable placeholder"; return false; }
+      const String name = text.substring(cursor + 2, end);
+      bool found = false;
+      for (const auto& item : variables) {
+        if (item.first == name) {
+          text = text.substring(0, cursor) + item.second + text.substring(end + 2);
+          cursor += item.second.length();
+          found = true;
+          break;
+        }
+      }
+      if (!found) { error_out = "undefined variable: " + name; return false; }
+    }
+    return true;
   }
 
   // Runs one already-tokenized, already-classified line. Returns false with
@@ -147,8 +188,13 @@ struct Executor {
     if (cmd == "REM") {
       return true;
     }
+    if (cmd == "DEFINE") {
+      return defineVariable(restOfLine(raw_line), error_out);
+    }
     if (cmd == "STRING" || cmd == "STRINGLN") {
-      keyboard.print(restOfLine(raw_line));
+      String text = restOfLine(raw_line);
+      if (!expandVariables(text, error_out)) return false;
+      keyboard.print(text);
       if (cmd == "STRINGLN") keyboard.write(KEY_RETURN);
       steps_run++;
       return true;
@@ -183,7 +229,7 @@ struct Executor {
 
 DuckyScriptResult runDuckyScript(const String& body, USBHIDKeyboard& keyboard) {
   DuckyScriptResult result;
-  Executor exec{keyboard};
+  Executor exec{keyboard, {}};
   exec.started_at_ms = millis();
 
   std::vector<String> lines;
@@ -271,6 +317,95 @@ DuckyScriptResult runDuckyScript(const String& body, USBHIDKeyboard& keyboard) {
 
   result.ok = true;
   result.steps_run = exec.steps_run;
+  return result;
+}
+
+DuckyScriptResult validateDuckyScript(const String& body) {
+  DuckyScriptResult result;
+  int line_number = 0;
+  bool have_previous = false;
+  std::vector<String> variables;
+  int start = 0;
+  for (int i = 0; i <= body.length(); ++i) {
+    if (i != body.length() && body[i] != '\n') continue;
+    ++line_number;
+    String line = body.substring(start, i);
+    line.trim();
+    start = i + 1;
+    if (!line.length()) continue;
+    const std::vector<String> tokens = tokenize(line);
+    if (tokens.empty()) continue;
+    const String cmd = upper(tokens[0]);
+    if (cmd == "REM") continue;
+    if (cmd == "DEFINE") {
+      const String definition = restOfLine(line);
+      const int separator = definition.indexOf(' ');
+      if (separator <= 0) { result.error = "DEFINE needs a name and value"; result.line_number = line_number; return result; }
+      const String name = definition.substring(0, separator);
+      if (name.length() > 24) { result.error = "variable name exceeds 24 characters"; result.line_number = line_number; return result; }
+      for (size_t n = 0; n < name.length(); ++n) {
+        if (!(isalnum(static_cast<unsigned char>(name[n])) || name[n] == '_')) {
+          result.error = "variable names use letters, digits, or underscore"; result.line_number = line_number; return result;
+        }
+      }
+      bool known = false;
+      for (const String& item : variables) if (item == name) known = true;
+      if (!known) variables.push_back(name);
+      if (variables.size() > kDuckyMaxVariables) { result.error = "too many variables"; result.line_number = line_number; return result; }
+      continue;
+    }
+    if (cmd == "STRING" || cmd == "STRINGLN") {
+      const String text = restOfLine(line);
+      int cursor = 0;
+      while ((cursor = text.indexOf("{{", cursor)) >= 0) {
+        const int end = text.indexOf("}}", cursor + 2);
+        if (end < 0) { result.error = "unterminated variable placeholder"; result.line_number = line_number; return result; }
+        const String name = text.substring(cursor + 2, end);
+        bool known = false;
+        for (const String& item : variables) if (item == name) known = true;
+        if (!known) { result.error = "undefined variable: " + name; result.line_number = line_number; return result; }
+        cursor = end + 2;
+      }
+      have_previous = true; ++result.steps_run; continue;
+    }
+    if (cmd == "DELAY" || cmd == "DEFAULTDELAY" || cmd == "DEFAULT_DELAY") {
+      if (parseNonNegative(restOfLine(line)) < 0) {
+        result.error = cmd + " needs a non-negative number";
+        result.line_number = line_number; return result;
+      }
+      if (cmd == "DELAY") { have_previous = true; ++result.steps_run; }
+      continue;
+    }
+    if (cmd == "REPEAT") {
+      if (!have_previous || parseNonNegative(restOfLine(line)) < 0) {
+        result.error = !have_previous ? "REPEAT with no preceding command"
+                                      : "REPEAT needs a non-negative number";
+        result.line_number = line_number; return result;
+      }
+      continue;
+    }
+    bool main_key = false;
+    for (size_t token = 0; token < tokens.size(); ++token) {
+      uint8_t code = 0;
+      const bool last = token + 1 == tokens.size();
+      if (!last && modifierToCode(tokens[token], code)) continue;
+      if (namedKeyToCode(tokens[token], code) || tokens[token].length() == 1 ||
+          (last && modifierToCode(tokens[token], code))) {
+        if (!last) {
+          result.error = "main key must be last"; result.line_number = line_number; return result;
+        }
+        main_key = true; continue;
+      }
+      result.error = "unrecognized key/command: " + tokens[token];
+      result.line_number = line_number; return result;
+    }
+    if (!main_key) { result.error = "line has modifiers but no key"; result.line_number = line_number; return result; }
+    have_previous = true; ++result.steps_run;
+  }
+  if (line_number > kDuckyMaxLines) {
+    result.error = "script exceeds line limit"; result.line_number = kDuckyMaxLines + 1; return result;
+  }
+  result.ok = true;
   return result;
 }
 

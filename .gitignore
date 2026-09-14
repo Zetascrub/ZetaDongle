@@ -1,5 +1,10 @@
 # PlatformIO build cache and downloaded deps
 .pio/
+src/generated_trust.h
+.reconclave-provisioning/
+*.bin
+*.elf
+*.log
 # Editor / OS
 .vscode/
 .DS_Store

@@ -26,7 +26,10 @@ constexpr int kDuckyMaxLines = 500;
 constexpr unsigned long kDuckyMaxSingleDelayMs = 60000;
 constexpr unsigned long kDuckyMaxTotalRuntimeMs = 120000;
 constexpr int kDuckyMaxRepeatCount = 50;
+constexpr int kDuckyMaxVariables = 24;
 
 DuckyScriptResult runDuckyScript(const String& body, USBHIDKeyboard& keyboard);
+// Parses the supported language without emitting HID reports or waiting.
+DuckyScriptResult validateDuckyScript(const String& body);
 
 }  // namespace reconclave

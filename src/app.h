@@ -1,18 +1,16 @@
-// The App core: owns the services, holds the registered modules, and runs the
-// begin/loop lifecycle. main.cpp just constructs it, registers modules, and
-// forwards setup()/loop().
-//
-// begin() order matters: services come up, then every module's begin() runs
-// (so a module can register a USB/HID interface or HTTP routes), then USB is
-// started last so the composite descriptor includes everything modules added.
+// App core for the fleet node: owns services, holds modules, runs the
+// begin/loop lifecycle. Bring-up order: base services -> node identity ->
+// network (needs the id for mDNS) -> HTTP server -> module registration.
 #pragma once
 
 #include <vector>
 
 #include "framework.h"
+#include "node_service.h"
 #include "radio_manager.h"
+#include "status_led.h"
 #include "storage_service.h"
-#include "ui_service.h"
+#include "display_ui.h"
 #include "usb_manager.h"
 
 namespace reconclave {
@@ -20,21 +18,27 @@ namespace reconclave {
 class App {
  public:
   App();
-
-  // Register a module. It must outlive the App (typically a static/global).
   void addModule(Module& module);
-
   void begin();
   void loop();
 
  private:
+  // Reads newline-terminated serial commands. Supported:
+  //   wifi <ssid> <pass>   store credentials in NVS and reboot to join
+  //   status               print id / link / ip
+  void pollSerialCommands();
+  void runArmedPayload();
+  String serial_line_;
+
   UsbManager usb_;
   RadioManager radio_;
-  StorageService storage_;
-  UiService ui_;
+  NodeService node_;
+  StatusLed led_;
   InputService input_;
   Config config_;
   TriggerPolicy trigger_;
+  StorageService storage_;
+  DisplayUi display_;
   Services services_;
   std::vector<Module*> modules_;
 };

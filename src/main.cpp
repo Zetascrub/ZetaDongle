@@ -1,38 +1,31 @@
-// Zeta-Dongle firmware entry point.
+// Reconclave T-Dongle-S3 dual-role entry point.
 //
-// The device is built as a capability-module framework (see framework.h and
-// app.h): the App core owns shared services (USB, radio, storage, UI, input,
-// config) and runs a list of self-registering modules. Adding a feature is
-// adding a module, not editing this file.
-//
-// Project invariant, unchanged from the original firmware: the physical button
-// is the ONLY thing that can trigger an action. Every action capability routes
-// through TriggerPolicy (framework.h), which authorises only a physical-button
-// trigger — there is no network, timer, or autonomous path to a keystroke. The
-// web console (ui.web.console) can author and *assign* scripts to the button
-// but has no "run" endpoint.
+// A trust-governed Reconclave node on the T-Dongle hardware, distinct from the
+// standalone ZetaDongle firmware. It joins the fleet network (STA), advertises
+// _reconclave._tcp, serves the reconclave/1 announce + message endpoints, and
+// authenticates every request with the provisioned HMAC scheme.
 //
 // Registered capabilities:
-//   hid.keyboard.inject   - run the button-assigned DuckyScript (action, gated)
-//   ui.web.console        - offline Zeta web script editor (authoring only)
-//   usb.rawhid.channel    - bidirectional raw-HID data channel (proof of the
-//                           framework's composite-USB extension path)
+//   input.hid.keystroke - run a DuckyScript payload on the USB HID keyboard,
+//                         invoked by the coordinator. AUTHENTICATED + requires a
+//                         verified signed engagement scope; scope verification
+//                         is milestone 2, so today it fails closed
+//                         (SCOPE_REQUIRED) and cannot type unscoped.
+//
+// Standalone payloads are authored/armed in the local control deck and execute
+// only on a physical button release. Fleet execution remains independently
+// authenticated and scope-gated. MSC is deferred until filesystem ownership can
+// switch safely between firmware and host without concurrent writers.
 #include "app.h"
-#include "hid_injector.h"
-#include "raw_hid_channel.h"
-#include "web_console.h"
+#include "hid_inject_module.h"
 
 namespace {
 reconclave::App g_app;
-reconclave::HidInjectorModule g_hid_injector;
-reconclave::WebConsoleModule g_web_console;
-reconclave::RawHidChannelModule g_raw_hid;
+reconclave::HidInjectModule g_hid_inject;
 }  // namespace
 
 void setup() {
-  g_app.addModule(g_hid_injector);
-  g_app.addModule(g_web_console);
-  g_app.addModule(g_raw_hid);
+  g_app.addModule(g_hid_inject);
   g_app.begin();
 }
 

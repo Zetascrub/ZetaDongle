@@ -1,49 +1,61 @@
-// Zeta-Dongle firmware framework — core contracts.
+// Reconclave T-Dongle node firmware framework — core contracts.
 //
-// The device is a set of self-registering capability *modules* serviced by a
-// small App core over a handful of shared *services*. Adding a feature means
-// adding a Module, not editing a monolith.
+// Same capability-module shape as the standalone ZetaDongle firmware (App core
+// + shared services + self-registering modules), but this is a *fleet node*:
+// actions are invoked by the coordinator over the authenticated protocol, so
+// TriggerPolicy models an authenticated, scope-verified network trigger rather
+// than only a physical button.
 //
-// A hard invariant of this framework: every host-affecting action passes
-// through TriggerPolicy. Today only a physical-button trigger is authorised;
-// there is no autonomous or network path to an action. A future signed-scope /
-// evidence-logging check slots into TriggerPolicy without touching any module.
+// Invariant: an action capability fires only if TriggerPolicy authorises it. A
+// network trigger requires BOTH request authentication (HMAC) AND a verified
+// signed engagement scope. Until signed-scope verification is implemented
+// (milestone 2) scope_verified is always false, so HID is announced but
+// fail-closed — it can never fire unscoped.
 #pragma once
 
 #include <Arduino.h>
 
 namespace reconclave {
 
-// Board pins (see README.md — confirmed against the real unit).
 namespace pins {
-constexpr int kButton = 0;       // GPIO0 boot-strap button.
-constexpr int kBacklight = 38;   // ST7735 backlight, active-LOW.
-constexpr int kLedData = 40;     // APA102 data.
-constexpr int kLedClock = 39;    // APA102 clock.
+constexpr int kButton = 0;     // GPIO0 boot-strap button (optional local trigger)
+constexpr int kLedData = 40;   // APA102 data
+constexpr int kLedClock = 39;  // APA102 clock
+constexpr int kBacklight = 38; // ST7735 backlight, active-low
 }  // namespace pins
 
-// Where an attempt to run an action came from. Only PhysicalButton is
-// authorised today; the rest exist so callers name their source honestly and
-// so future policy can distinguish them.
 enum class TriggerSource { PhysicalButton, Network, Timer, Unknown };
 
-// The single chokepoint every action capability must call before doing
-// anything that affects the host. Keep this the *only* place authorisation is
-// decided so the "button-only, no autonomous/remote path" guarantee can't be
-// bypassed by an individual module.
+// Context for an authorisation decision. For a network trigger, both flags must
+// be true; the node sets `authenticated` after the HMAC check and (in a future
+// milestone) `scope_verified` after checking the signed scope-delegation token.
+struct TriggerContext {
+  TriggerSource source{TriggerSource::Unknown};
+  bool authenticated{false};
+  bool scope_verified{false};
+};
+
 class TriggerPolicy {
  public:
-  bool authorize(const char* capability_id, TriggerSource source, String& reason) const {
+  bool authorize(const char* capability_id, const TriggerContext& ctx, String& reason) const {
     (void)capability_id;
-    if (source == TriggerSource::PhysicalButton) return true;
-    reason = "only a physical-button trigger is authorised (no autonomous/remote path)";
+    if (ctx.source == TriggerSource::PhysicalButton) return true;
+    if (ctx.source == TriggerSource::Network) {
+      if (!ctx.authenticated) {
+        reason = "request not authenticated";
+        return false;
+      }
+      if (!ctx.scope_verified) {
+        reason = "signed engagement scope required";
+        return false;
+      }
+      return true;
+    }
+    reason = "unauthorised trigger source";
     return false;
   }
 };
 
-// Debounced-ish edge detection for the single physical button. INPUT_PULLUP:
-// idle HIGH, pressed LOW. A "primary press" is a completed press-then-release,
-// matching the original firmware's fire-on-release behaviour.
 class InputService {
  public:
   void begin(int button_pin) {
@@ -53,16 +65,26 @@ class InputService {
   void poll() {
     pressed_now_ = digitalRead(pin_) == LOW;
     if (pressed_now_ != last_pressed_) {
-      if (!pressed_now_) released_edge_ = true;  // press -> release completes it
+      if (pressed_now_) {
+        pressed_at_ = millis();
+      } else if (millis() - pressed_at_ >= 1800) {
+        long_released_edge_ = true;
+      } else {
+        released_edge_ = true;
+      }
       last_pressed_ = pressed_now_;
     }
   }
   bool pressedNow() const { return pressed_now_; }
-  // Returns true exactly once per completed press-release, then clears.
   bool consumePrimaryPress() {
     const bool e = released_edge_;
     released_edge_ = false;
     return e;
+  }
+  bool consumeLongPress() {
+    const bool edge = long_released_edge_;
+    long_released_edge_ = false;
+    return edge;
   }
 
  private:
@@ -70,11 +92,10 @@ class InputService {
   bool last_pressed_ = false;
   bool pressed_now_ = false;
   bool released_edge_ = false;
+  bool long_released_edge_ = false;
+  unsigned long pressed_at_ = 0;
 };
 
-// Thin persisted key/value for module settings (NVS). ScriptStore still owns
-// its own persistence; this is for small module config that doesn't warrant a
-// file. Header-declared, defined in framework.cpp.
 class Config {
  public:
   void begin();
@@ -84,25 +105,26 @@ class Config {
   void setString(const char* key, const String& value);
 };
 
-// Services are constructed once by the App and injected into every module.
-// Forward-declared here; modules include the concrete headers they use.
+// Services, injected into every module. Forward-declared here.
 class UsbManager;
 class RadioManager;
+class NodeService;
+class StatusLed;
 class StorageService;
-class UiService;
+class DisplayUi;
 
 struct Services {
   UsbManager& usb;
   RadioManager& radio;
-  StorageService& storage;
-  UiService& ui;
+  NodeService& node;
+  StatusLed& led;
   InputService& input;
   Config& config;
   TriggerPolicy& trigger;
+  StorageService& storage;
+  DisplayUi& display;
 };
 
-// A capability module. `capabilityId` is a stable dotted name (e.g.
-// "hid.keyboard.inject") so modules, logs and future authz can refer to it.
 class Module {
  public:
   virtual ~Module() = default;

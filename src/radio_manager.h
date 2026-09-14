@@ -1,6 +1,10 @@
-// Owns the Wi-Fi/BLE radios. Today it brings up the standalone SoftAP the web
-// console runs on (moved here from web_ui so the radio has a single owner). BLE
-// and STA/scan are declared as future extension points, not yet implemented.
+// Radios for the node. Runs AP + STA concurrently (WIFI_AP_STA):
+//   - a management AP (Reconclave-<mac4>) is ALWAYS up, so the control deck
+//     UI is reachable even before WiFi is configured (Pineapple-style);
+//   - STA joins the fleet network when credentials are set, and only then is
+//     _reconclave._tcp advertised over mDNS for the coordinator.
+// Bringing the netif up unconditionally in init() also avoids the offline-boot
+// crash the STA-only early-return once caused.
 #pragma once
 
 #include <Arduino.h>
@@ -10,20 +14,22 @@ namespace reconclave {
 
 class RadioManager {
  public:
-  // Brings up a standalone AP named "Zeta-Dongle-<last 4 of AP MAC>". The
-  // passphrase is the whole access-control boundary for the offline console.
-  bool beginAp(const char* password);
+  // Bring up AP+STA and start the always-on management AP. Call before reading
+  // the MAC or starting any server.
+  void init();
 
+  // Join the fleet network (STA) if credentials are set, and advertise mDNS on
+  // success. Empty credentials => STA idle, AP still up.
+  bool connect(const String& ssid, const String& pass, const String& device_id, uint16_t port);
+
+  bool staConnected() const;
+  IPAddress staIp() const;
   const String& apSsid() const { return ap_ssid_; }
   IPAddress apIp() const;
-  bool apUp() const { return ap_up_; }
-
-  // Future extension points (not implemented): STA join, scan, promiscuous
-  // sniffing, BLE advertise/scan/HID. Declared to mark the intended surface.
 
  private:
   String ap_ssid_;
-  bool ap_up_ = false;
+  bool mdns_up_ = false;
 };
 
 }  // namespace reconclave

@@ -1,171 +1,133 @@
 #include "display_ui.h"
 
-#include "mascot_assets.h"
+#include "radio_manager.h"
+#include "reconclave/identity.h"
+#include "storage_service.h"
 
 namespace reconclave {
 namespace {
-constexpr int kPageCount = 4;
-constexpr unsigned long kPageIntervalMs = 3500;
-constexpr unsigned long kFlashDurationMs = 1200;
-constexpr unsigned long kBootFrameIntervalMs = 90;
-constexpr int kBootLoops = 2;
+constexpr int kPages = 4;
+constexpr unsigned long kPageMs = 4000;
+uint16_t c565(uint32_t c) {
+  return static_cast<uint16_t>(((c >> 8) & 0xf800) | ((c >> 5) & 0x07e0) | ((c >> 3) & 0x001f));
+}
+const uint16_t kCanvas = c565(identity::kColorCanvas);
+const uint16_t kSurface = c565(identity::kColorSurface);
+const uint16_t kAccent = c565(identity::kColorAccent);
+const uint16_t kWarning = c565(identity::kColorWarning);
+const uint16_t kDanger = c565(identity::kColorDanger);
+const uint16_t kInk = c565(identity::kColorInk);
+const uint16_t kMuted = c565(identity::kColorInkMuted);
+const uint16_t kBorder = c565(identity::kColorBorder);
 }  // namespace
 
-void DisplayUi::begin(TFT_eSPI& tft) {
-  tft_ = &tft;
-  // Brand navy from the Zetascrub palette - matches the flattened background
-  // already baked into mascot_assets.h's icon/boot-frame art, so those blit
-  // in with no visible box around them.
-  bg_color_ = tft_->color565(0x08, 0x28, 0x3E);
+void DisplayUi::begin() {
+  pinMode(38, OUTPUT);
+  digitalWrite(38, LOW);
+  display_.init();
+  display_.setRotation(0);
+  display_.setTextWrap(false);
+  display_.fillScreen(kCanvas);
+  display_.drawCircle(40, 55, 25, kAccent);
+  display_.drawCircle(40, 55, 21, kBorder);
+  display_.setTextColor(kAccent, kCanvas);
+  display_.setTextSize(3);
+  display_.setCursor(31, 44);
+  display_.print("Z");
+  display_.setTextSize(1);
+  display_.setTextColor(kInk, kCanvas);
+  display_.setCursor(7, 94);
+  display_.print("RECONCLAVE");
+  display_.setTextColor(kMuted, kCanvas);
+  display_.setCursor(10, 108);
+  display_.print("T-DONGLE");
+  delay(900);
+  next_page_ms_ = millis() + kPageMs;
 }
 
-void DisplayUi::playBootAnimation() {
-  tft_->fillScreen(bg_color_);
-  const int x = (80 - kBootFrameWidth) / 2;
-  const int y = (160 - kBootFrameHeight) / 2 - 10;
-  for (int loop = 0; loop < kBootLoops; loop++) {
-    for (int i = 0; i < kBootFrameCount; i++) {
-      tft_->pushImage(x, y, kBootFrameWidth, kBootFrameHeight, kBootFrames[i]);
-      delay(kBootFrameIntervalMs);
-    }
+void DisplayUi::drawFrame(const char* title, uint16_t state_color) {
+  display_.fillScreen(kCanvas);
+  display_.fillRect(0, 0, 80, 18, kSurface);
+  display_.drawFastHLine(0, 18, 80, kBorder);
+  display_.fillRect(0, 19, 2, 123, state_color);
+  display_.setTextSize(1);
+  display_.setTextColor(kInk, kSurface);
+  display_.setCursor(5, 5);
+  display_.print(title);
+  display_.setTextColor(kMuted, kCanvas);
+  display_.setCursor(4, 149);
+  display_.printf("%d/%d", page_ + 1, kPages);
+}
+
+void DisplayUi::printClipped(const String& text, int x, int y, int chars, uint16_t color) {
+  String shown = text;
+  if (shown.length() > static_cast<size_t>(chars)) shown = shown.substring(0, chars - 1) + "~";
+  display_.setTextColor(color, kCanvas);
+  display_.setCursor(x, y);
+  display_.print(shown);
+}
+
+void DisplayUi::drawPage(const StorageService& storage, const RadioManager& radio,
+                         bool node_linked) {
+  if (page_ == 0) {
+    drawFrame("DONGLE", node_linked ? kAccent : kWarning);
+    display_.setTextColor(node_linked ? kAccent : kWarning, kCanvas);
+    display_.setCursor(7, 31); display_.print(node_linked ? "NODE LINK" : "STANDALONE");
+    display_.setTextColor(kInk, kCanvas);
+    display_.setCursor(7, 52); display_.print("READY");
+    display_.setTextColor(kMuted, kCanvas);
+    display_.setCursor(7, 75); display_.print("AP");
+    printClipped(radio.apSsid(), 7, 88, 11, kInk);
+    printClipped(radio.apIp().toString(), 7, 102, 13, kAccent);
+  } else if (page_ == 1) {
+    const bool armed = storage.armedPayload().length() > 0;
+    drawFrame("PAYLOAD", armed ? kWarning : kMuted);
+    display_.setTextColor(armed ? kWarning : kMuted, kCanvas);
+    display_.setCursor(7, 31); display_.print(armed ? "ARMED" : "SAFE");
+    printClipped(armed ? storage.armedPayload() : "none", 7, 52, 11, kInk);
+    display_.setTextColor(kMuted, kCanvas);
+    display_.setCursor(7, 78); display_.print(armed ? "PRESS BUTTON" : "ARM IN WEB UI");
+    display_.setCursor(7, 92); display_.printf("%u saved", static_cast<unsigned>(storage.listPayloads().size()));
+  } else if (page_ == 2) {
+    drawFrame("STORAGE", kAccent);
+    display_.setTextColor(kInk, kCanvas);
+    display_.setCursor(7, 31); display_.printf("LOOT %u", static_cast<unsigned>(storage.listLoot().size()));
+    display_.setCursor(7, 50); display_.printf("USED %uK", static_cast<unsigned>(storage.usedBytes() / 1024));
+    display_.setTextColor(kMuted, kCanvas);
+    display_.setCursor(7, 70); display_.printf("FREE %uK", static_cast<unsigned>((storage.totalBytes() - storage.usedBytes()) / 1024));
+    display_.setCursor(7, 94); display_.print("MSC PLANNED");
+  } else {
+    drawFrame("ACTIVITY", storage.failureCount() ? kWarning : kAccent);
+    display_.setTextColor(kInk, kCanvas);
+    display_.setCursor(7, 31); display_.printf("RUNS %u", static_cast<unsigned>(storage.runCount()));
+    display_.setCursor(7, 49); display_.printf("FAIL %u", static_cast<unsigned>(storage.failureCount()));
+    display_.setTextColor(kMuted, kCanvas);
+    display_.setCursor(7, 73); display_.print(node_linked ? "FLEET ONLINE" : "FLEET OFFLINE");
+    display_.setCursor(7, 87); display_.print(radio.staConnected() ? "STA CONNECTED" : "AP ONLY");
   }
-  const uint16_t cyan = tft_->color565(0x22, 0xE0, 0xF2);
-  tft_->setTextColor(cyan, bg_color_);
-  tft_->setTextSize(1);
-  tft_->setCursor(10, y + kBootFrameHeight + 10);
-  tft_->print("ZETASCRUB");
-  delay(500);
 }
 
-void DisplayUi::update(const ScriptStore& store, const String& ap_ssid,
-                        const IPAddress& ap_ip) {
+void DisplayUi::update(const StorageService& storage, const RadioManager& radio, bool node_linked) {
   const unsigned long now = millis();
-  if (flash_until_ != 0) {
-    if (now < flash_until_) return;
-    flash_until_ = 0;
-    last_drawn_page_ = -1;  // Force a redraw of the normal cycle on return.
+  if (overlay_until_ms_ && now < overlay_until_ms_) return;
+  if (overlay_until_ms_) { overlay_until_ms_ = 0; drawn_page_ = -1; }
+  if (now >= next_page_ms_) {
+    page_ = (page_ + 1) % kPages;
+    next_page_ms_ = now + kPageMs;
   }
-  if (now >= next_page_at_) {
-    page_ = (page_ + 1) % kPageCount;
-    next_page_at_ = now + kPageIntervalMs;
-  }
-  if (page_ != last_drawn_page_) {
-    drawPage(page_, store, ap_ssid, ap_ip);
-    last_drawn_page_ = page_;
+  if (drawn_page_ != page_) {
+    drawPage(storage, radio, node_linked);
+    drawn_page_ = page_;
   }
 }
 
-void DisplayUi::flashFired(uint32_t fire_count) {
-  flash_until_ = millis() + kFlashDurationMs;
-  const uint16_t green = tft_->color565(0x3A, 0xE0, 0x7A);
-  tft_->fillScreen(bg_color_);
-  tft_->setTextColor(green, bg_color_);
-  tft_->setTextSize(2);
-  tft_->setCursor(6, 60);
-  tft_->print("FIRED!");
-  tft_->setTextSize(1);
-  tft_->setCursor(6, 90);
-  tft_->print("count: ");
-  tft_->print(fire_count);
-}
-
-void DisplayUi::drawPage(int page, const ScriptStore& store, const String& ap_ssid,
-                          const IPAddress& ap_ip) {
-  const uint16_t cyan = tft_->color565(0x22, 0xE0, 0xF2);
-  const uint16_t tan = tft_->color565(0xB4, 0x83, 0x53);
-  const uint16_t cream = tft_->color565(0xF8, 0xEE, 0xD0);
-  const uint16_t orange = tft_->color565(0xF6, 0xA1, 0x02);
-
-  tft_->fillScreen(bg_color_);
-  tft_->setTextSize(1);
-
-  switch (page) {
-    case 0: {  // Brand / idle.
-      tft_->pushImage((80 - kZetaIconWidth) / 2, 10, kZetaIconWidth, kZetaIconHeight,
-                       kZetaIconImage);
-      tft_->setTextColor(cyan, bg_color_);
-      tft_->setCursor(10, 58);
-      tft_->print("ZETASCRUB");
-      tft_->setTextColor(cream, bg_color_);
-      tft_->setCursor(4, 72);
-      tft_->print("T-DONGLE-S3");
-      tft_->setTextColor(tan, bg_color_);
-      tft_->setCursor(4, 96);
-      tft_->print("TINKER HACK");
-      tft_->setCursor(4, 108);
-      tft_->print("FLASH REPEAT");
-      break;
-    }
-    case 1: {  // Network / web UI.
-      tft_->setTextColor(cyan, bg_color_);
-      tft_->setCursor(4, 14);
-      tft_->print("WEB UI");
-      tft_->setTextColor(cream, bg_color_);
-      tft_->setCursor(4, 34);
-      tft_->print(ap_ssid);
-      tft_->setTextColor(tan, bg_color_);
-      tft_->setCursor(4, 50);
-      tft_->print("pass:");
-      tft_->setCursor(4, 62);
-      tft_->print("TinkerHackFlash");
-      tft_->setTextColor(orange, bg_color_);
-      tft_->setCursor(4, 90);
-      tft_->print("http://");
-      tft_->setCursor(4, 102);
-      tft_->print(ap_ip.toString());
-      break;
-    }
-    case 2: {  // Armed script.
-      tft_->setTextColor(cyan, bg_color_);
-      tft_->setCursor(4, 14);
-      tft_->print("ARMED");
-      const String assigned = store.assignedName();
-      if (assigned.length() == 0) {
-        tft_->setTextColor(tan, bg_color_);
-        tft_->setCursor(4, 40);
-        tft_->print("(none)");
-        tft_->setCursor(4, 56);
-        tft_->print("use web UI");
-        tft_->setCursor(4, 68);
-        tft_->print("to assign");
-      } else {
-        tft_->setTextColor(orange, bg_color_);
-        tft_->setCursor(4, 40);
-        tft_->print(assigned);
-        tft_->setTextColor(cream, bg_color_);
-        tft_->setCursor(4, 60);
-        tft_->print("button fires");
-        tft_->setCursor(4, 72);
-        tft_->print("this script");
-      }
-      break;
-    }
-    case 3: {  // Stats.
-      tft_->setTextColor(cyan, bg_color_);
-      tft_->setCursor(4, 14);
-      tft_->print("STATS");
-      tft_->setTextColor(cream, bg_color_);
-      tft_->setCursor(4, 36);
-      tft_->print("fires: ");
-      tft_->print(store.fireCount());
-      tft_->setCursor(4, 50);
-      tft_->print("(this boot)");
-      const unsigned long last_fired = store.lastFiredMs();
-      tft_->setTextColor(tan, bg_color_);
-      tft_->setCursor(4, 76);
-      if (last_fired == 0) {
-        tft_->print("not fired");
-        tft_->setCursor(4, 88);
-        tft_->print("yet");
-      } else {
-        tft_->print("last:");
-        tft_->setCursor(4, 88);
-        tft_->print((millis() - last_fired) / 1000);
-        tft_->print("s ago");
-      }
-      break;
-    }
-  }
+void DisplayUi::showRunResult(const String& payload, bool ok, const String& detail) {
+  drawFrame(ok ? "COMPLETE" : "FAILED", ok ? kAccent : kDanger);
+  display_.setTextColor(ok ? kAccent : kDanger, kCanvas);
+  display_.setCursor(7, 34); display_.print(ok ? "PAYLOAD DONE" : "PAYLOAD STOP");
+  printClipped(payload, 7, 55, 11, kInk);
+  printClipped(detail, 7, 78, 11, kMuted);
+  overlay_until_ms_ = millis() + 1800;
 }
 
 }  // namespace reconclave
