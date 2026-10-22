@@ -26,6 +26,7 @@ class Trust {
  public:
   void begin();  // generate a fresh 16-byte boot nonce for this session
   const char* bootNonceHex() const { return boot_nonce_hex_; }
+  bool provisioned() const;
 
   // Verifies a request's `auth` object against the provisioned peer named by
   // `source_id`. Returns the matched peer on success (and records the request
@@ -35,8 +36,18 @@ class Trust {
                                              JsonVariantConst arguments, JsonObjectConst auth,
                                              String& reason);
 
+  bool verifyHostedScope(const rc_provisioned_peer_t* peer, JsonVariantConst arguments,
+                         const char* capability, const String& device_id,
+                         const String& instance_id, String& reason);
+
+  // Bind a response to the authenticated request and this boot session.
+  bool signResponse(const rc_provisioned_peer_t* peer, const char* source_id,
+                    const char* dest_id, const char* request_id, const char* status,
+                    const char* nonce_hex, JsonVariantConst body, JsonObject auth);
+
   // Exposed for the digest step / tests.
-  static bool canonicalJson(JsonVariantConst value, String& out, const char* exclude_key);
+  static bool canonicalJson(JsonVariantConst value, String& out, const char* exclude_key,
+                            bool sort_keys = true);
   static String sha256Hex(const String& text);
 
  private:

@@ -7,6 +7,7 @@
 #include <sdmmc_cmd.h>
 
 #include <algorithm>
+#include <time.h>
 
 namespace reconclave {
 namespace {
@@ -165,11 +166,41 @@ bool StorageService::armPayload(const String& name) {
   return true;
 }
 
-void StorageService::recordRun(bool ok) {
+void StorageService::recordRun(bool ok, const String& name) {
   ++run_count_;
   if (!ok) ++failure_count_;
   last_run_ms_ = millis();
   saveMeta();
+  const time_t now = time(nullptr);
+  appendAudit(ok ? "run-ok" : "run-failed",
+              String(run_count_) + "|" + String(now >= 1700000000 ? static_cast<uint32_t>(now) : 0) + "|" + name);
+}
+
+void StorageService::recentRunEvents(JsonArray events) const {
+  // shortcut: only the last 8 KiB of audit can be reported; use a dedicated queue if runs become frequent.
+  const String log = auditLog(8192);
+  int start = 0;
+  while (start < log.length()) {
+    int end = log.indexOf('\n', start);
+    if (end < 0) end = log.length();
+    const String line = log.substring(start, end);
+    start = end + 1;
+    const int first = line.indexOf('\t');
+    const int second = first < 0 ? -1 : line.indexOf('\t', first + 1);
+    if (second < 0) continue;
+    const String event = line.substring(first + 1, second);
+    if (event != "run-ok" && event != "run-failed") continue;
+    const String detail = line.substring(second + 1);
+    const int separator = detail.indexOf('|');
+    const int next = separator < 0 ? -1 : detail.indexOf('|', separator + 1);
+    if (next < 0) continue;
+    if (events.size() == 20) events.remove(0);
+    JsonObject item = events.add<JsonObject>();
+    item["seq"] = static_cast<uint32_t>(detail.substring(0, separator).toInt());
+    item["occurred_at"] = static_cast<uint32_t>(detail.substring(separator + 1, next).toInt());
+    item["name"] = detail.substring(next + 1);
+    item["ok"] = event == "run-ok";
+  }
 }
 
 void StorageService::appendAudit(const String& event, const String& detail) {

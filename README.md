@@ -28,7 +28,8 @@ payload builder. In a trusted Reconclave fleet it can advertise status and
 capabilities while keeping local button actions separate from remote work.
 
 > Use ZetaDongle only on hosts you own or are explicitly authorised to test.
-> Payload execution requires a deliberate physical button press.
+> Local payloads can run from the button or an explicitly enabled USB attach
+> trigger. Hosted direct HID requires enrollment in the intended instance.
 
 ## Relationship to Reconclave
 
@@ -39,9 +40,9 @@ capabilities while keeping local button actions separate from remote work.
 - **Shared contract:** `shared/protocol/` and `shared/identity/` are vendored
   snapshots of [Reconclave](https://github.com/Zetascrub/Reconclave), which
   remains authoritative for protocol and visual identity definitions.
-- **Safety boundary:** authoring or arming in the local console does not execute
-  a payload. Network-triggered HID remains fail-closed unless authenticated
-  scope verification is present.
+- **Safety boundary:** local USB auto-run is off by default. The hosted direct
+  queue requires the device's instance credential; LAN fleet HID still requires
+  HMAC authentication and signed scope verification.
 
 ## Firmware overview
 
@@ -56,11 +57,11 @@ The Dongle always exposes a local management AP and responsive control deck. It
 may simultaneously join a provisioned Reconclave network and advertise itself
 as a fleet node.
 
-- **Standalone:** create, edit, delete, and arm named DuckyScript payloads. A
-  payload can execute only after the physical button is released.
-- **Node:** advertise and receive Reconclave capabilities. Remote action remains
-  authenticated and scope-gated; it currently fails closed until signed-scope
-  verification lands.
+- **Standalone:** create, edit, delete, and arm named DuckyScript payloads.
+  Press the button or explicitly enable a once-per-boot USB attach trigger.
+- **Node:** advertise and receive Reconclave capabilities. An enrolled dongle
+  polls its hosted instance for direct HID commands. The older LAN fleet HID
+  path still requires a provisioned link and signed scope.
 - **Storage:** persistent LittleFS payload library, loot folder, run/failure
   counters, retained armed selection, optional microSD, and SD backup.
 - **Local UI:** 80×160 Zeta-theme display with boot identity, mode/link status,
@@ -79,8 +80,17 @@ Connect to `Reconclave-XXXX` with password `reconclave-setup`, then browse to
 4. The display and LED report completion or failure; counters persist.
 5. Choose **Disarm** when finished.
 
-A long press (1.8 seconds) provides an immediate hardware disarm gesture without
-opening the control deck.
+A long press (1.8 seconds) disarms the payload and turns off USB auto-run
+without opening the control deck.
+
+To run the armed payload on USB attach, send `autorun on` over the dongle's USB
+serial console during preparation. It runs once per boot after USB HID is ready.
+Send `autorun off` to return to button-only local execution. This setting is
+stored on the dongle; no command is needed on the target computer. While it is
+on, the management page cannot edit or change the armed payload; disarming
+remains available. For remote
+execution, enroll the dongle in a hosted instance and queue DuckyScript from
+its dashboard. The dongle polls that queue over HTTPS and types on its USB host.
 
 The interpreter is bounded to 500 lines, 60 seconds per delay, 50 repeats, and
 120 seconds total runtime. USB keyboard output uses US-layout HID positions.
@@ -131,9 +141,10 @@ host has flushed or safely ejected the volume.
 ## Architecture and safety
 
 `App` owns USB, radio, node, storage, display, input, configuration, LED, and
-trigger policy. Physical standalone execution requires the explicit button
-gesture. Network execution requires HMAC authentication and verified signed
-scope. Timer and unknown trigger sources are rejected. Names allow only 1–40
+trigger policy. A local payload runs from the button or the explicitly enabled
+USB attach trigger. Hosted direct commands require the enrolled device credential;
+LAN fleet execution requires HMAC authentication and verified signed scope.
+Timer and unknown trigger sources are rejected. Names allow only 1–40
 letters, digits, hyphens, or underscores; bodies and files have size limits.
 
 ## Capability matrix
@@ -151,8 +162,9 @@ letters, digits, hyphens, or underscores; bodies and files have size limits.
 | Zeta-theme LCD dashboard | Implemented |
 | AP+STA responsive control deck | Implemented |
 | Reconclave announce, HMAC verification, replay protection | Implemented |
-| Signed scope delegation | Pending; remote HID fails closed |
-| Encrypted evidence and signed responses | Pending |
+| Signed hosted HID scope delegation | Tested on ZetaD-Test3 with Test-Instance and this Linux workstation; broader device coverage untested |
+| Signed trusted responses | Implemented and verified with Command |
+| Encrypted evidence | Pending |
 | Raw HID host-helper channel | Feasible |
 | BLE observation / BLE HID | Feasible, memory-budget dependent |
 | USB Ethernet gadget | High effort; lower-level TinyUSB/ESP-IDF work |
@@ -162,19 +174,43 @@ letters, digits, hyphens, or underscores; bodies and files have size limits.
 Provisioned collective builds require an ignored `src/generated_trust.h` with
 the `rc_provisioned_peer_t` entries authorised for this dongle. The zero-key
 file under `config/` is strictly a compile fixture and must never be treated as
-fleet trust — flashing it produces a device that fails closed against every
-authenticated remote action, useful only to confirm the base app boots.
-Standalone operation may use a locally generated deployment header while remote
-actions remain fail-closed.
+fleet trust — flashing it leaves LAN fleet commands fail-closed. An enrolled
+device can still use the separate hosted direct command queue.
 
 ```sh
 pio run
 ```
 
+### Flash the private build without wiping Wi-Fi/enrollment
+
+Wi-Fi credentials and the hosted instance enrollment live in NVS (via
+`Preferences`); payloads live in LittleFS. The trust key is compiled into the
+app. So to swap a provisioned HID build onto an already-set-up dongle **without
+re-provisioning**, flash without erasing — `pio run -t upload` writes the
+bootloader, partition table, OTA selector, and app but leaves NVS and LittleFS
+intact:
+
+```sh
+pio run -t upload                     # no erase: keeps Wi-Fi, enrollment, payloads
+```
+
+App-only alternative (same effect, explicit offset):
+
+```sh
+esptool --chip esp32s3 --port /dev/ttyACM0 --after hard_reset \
+  write_flash 0x10000 .pio/build/t_dongle_s3/firmware.bin
+```
+
+Never pass `--erase-all` / "erase device": a full erase wipes NVS and LittleFS,
+so Wi-Fi, enrollment, and payloads are lost and the dongle must be
+re-provisioned. (A full erase also bricks unless the flash includes the
+bootloader and partition table — see the hosted service's update manifest.)
+
 Pushing a version tag (`vX.Y.Z`) runs [release.yml](.github/workflows/release.yml),
 which builds against that same zero-key stand-in and publishes it as a GitHub
 Release — an **unprovisioned example build** you flash and then provision for
-real, not a deployable fleet node. See
+real, not a deployable trusted LAN fleet node. It can still enroll in a hosted
+instance for direct HID. See
 [docs/releasing.md](https://github.com/Zetascrub/Reconclave/blob/main/docs/releasing.md#public-example-firmware-dummy-trust-ci-builds).
 
 Current footprint is approximately 18% RAM and 15% application flash. Bench

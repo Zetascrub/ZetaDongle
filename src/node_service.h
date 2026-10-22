@@ -5,9 +5,8 @@
 // module registered. Modules never touch HTTP or crypto; they register a
 // handler and receive already-authenticated arguments.
 //
-// Milestone 1: request authentication (HMAC) and dispatch are implemented;
-// response signing and signed-scope-delegation verification are milestone 2
-// (until then a trusted action fails closed in its own handler).
+// Trusted requests and responses use HMAC; the HID handler verifies a second
+// instance-bound scope before executing a script.
 #pragma once
 
 #include <ArduinoJson.h>
@@ -30,6 +29,7 @@ struct RequestContext {
   String request_id;
   String capability;
   bool authenticated{false};
+  const rc_provisioned_peer_t* peer{nullptr};
 };
 
 struct CapabilityOutcome {

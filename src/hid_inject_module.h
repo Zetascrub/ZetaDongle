@@ -3,11 +3,8 @@
 //
 // It is registered as a "trusted" capability, so NodeService authenticates the
 // request (HMAC) before the handler runs. The handler then requires a verified
-// signed engagement scope via TriggerPolicy. Until signed-scope verification
-// exists (milestone 2) scope_verified is false, so this fails closed with
-// SCOPE_REQUIRED and never types anything — the node advertises the capability
-// but cannot fire it unscoped. This is the "no keystroke without verified scope
-// + evidence" rule the project has always required for a remote trigger.
+// signed hosted scope via TriggerPolicy. The scope is bound to this instance,
+// the attached computer and the exact DuckyScript before anything is typed.
 #pragma once
 
 #include "framework.h"

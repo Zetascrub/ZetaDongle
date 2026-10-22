@@ -14,21 +14,24 @@ void HidInjectModule::begin(Services& s) {
   // long-lived service objects is safe.
   TriggerPolicy* trigger = &s.trigger;
   UsbManager* usb = &s.usb;
+  Trust* trust = &s.node.trust();
+  Config* config = &s.config;
+  NodeService* node = &s.node;
 
   s.node.registerCapability(
       "input.hid.keystroke", "trusted",
-      [trigger, usb](JsonVariantConst args, const RequestContext& ctx) -> CapabilityOutcome {
+      [trigger, usb, trust, config, node](JsonVariantConst args, const RequestContext& ctx) -> CapabilityOutcome {
         CapabilityOutcome out;
 
-        // Network trigger: authenticated by NodeService, but a verified signed
-        // engagement scope is still required. scope_verified is false until
-        // milestone 2, so this fails closed here.
         TriggerContext tctx;
         tctx.source = TriggerSource::Network;
         tctx.authenticated = ctx.authenticated;
-        tctx.scope_verified = false;  // TODO(m2): verify args["_scope_delegation"]
         String reason;
+        tctx.scope_verified = trust->verifyHostedScope(ctx.peer, args, "input.hid.keystroke",
+                                                        node->deviceId(), config->getString("host_inst", ""), reason);
+        const String scope_reason = reason;
         if (!trigger->authorize("input.hid.keystroke", tctx, reason)) {
+          if (!tctx.scope_verified && scope_reason.length()) reason = scope_reason;
           out.status = "rejected";
           out.error_code = "SCOPE_REQUIRED";
           out.error_message = reason;
@@ -36,9 +39,13 @@ void HidInjectModule::begin(Services& s) {
           return out;
         }
 
-        // Reachable only once scope verification is added and passes. Kept
-        // compiled so the execution path is wired, not stubbed.
         const String script = args["script"] | "";
+        if (!script.length() || script.length() > 500) {
+          out.status = "rejected";
+          out.error_code = "INVALID_SCRIPT";
+          out.error_message = "script must contain 1-500 characters";
+          return out;
+        }
         const DuckyScriptResult r = runDuckyScript(script, usb->keyboard());
         JsonDocument res;
         res["steps_run"] = r.steps_run;

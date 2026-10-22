@@ -22,11 +22,15 @@ void RadioManager::init() {
 
 bool RadioManager::connect(const String& ssid, const String& pass, const String& device_id,
                            uint16_t port) {
+  device_id_ = device_id;
+  port_ = port;
+  station_ssid_ = ssid;
   if (ssid.length() == 0) {
     Serial.println("radio: no wifi_ssid set - STA idle (configure via the web UI or serial)");
     return false;
   }
   WiFi.begin(ssid.c_str(), pass.c_str());
+  WiFi.setAutoReconnect(true);
   const unsigned long deadline = millis() + 15000;
   while (WiFi.status() != WL_CONNECTED && millis() < deadline) delay(200);
   if (WiFi.status() != WL_CONNECTED) {
@@ -42,6 +46,24 @@ bool RadioManager::connect(const String& ssid, const String& pass, const String&
     Serial.println("radio: mDNS start failed");
   }
   return true;
+}
+
+void RadioManager::poll() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (mdns_up_) {
+      MDNS.end();
+      mdns_up_ = false;
+    }
+    if (station_ssid_.length() && millis() - last_retry_ms_ >= 30000UL) {
+      WiFi.reconnect();
+      last_retry_ms_ = millis();
+    }
+    return;
+  }
+  if (!mdns_up_ && device_id_.length() && MDNS.begin(device_id_.c_str())) {
+    MDNS.addService("reconclave", "tcp", port_);
+    mdns_up_ = true;
+  }
 }
 
 bool RadioManager::staConnected() const { return WiFi.status() == WL_CONNECTED; }

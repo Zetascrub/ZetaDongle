@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <ctime>
+#include <iterator>
+#include <string>
 
 #include "esp_random.h"
 #include "mbedtls/md.h"
@@ -55,6 +58,15 @@ void Trust::begin() {
   toHex(nonce, sizeof(nonce), boot_nonce_hex_);
 }
 
+bool Trust::provisioned() const {
+  for (const auto& peer : RC_PROVISIONED_PEERS) {
+    if (peer.peer_id == nullptr || peer.peer_id[0] == '\0') continue;
+    if (std::any_of(std::begin(peer.key), std::end(peer.key),
+                    [](uint8_t byte) { return byte != 0; })) return true;
+  }
+  return false;
+}
+
 String Trust::sha256Hex(const String& text) {
   uint8_t digest[32];
   const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
@@ -64,13 +76,13 @@ String Trust::sha256Hex(const String& text) {
   return String(hex);
 }
 
-// Compact JSON with object keys sorted lexicographically, matching Python's
-// json.dumps(x, sort_keys=True, separators=(",", ":")). Object keys are
-// restricted to [A-Za-z0-9_] (fails closed otherwise), mirroring the P4.
-bool Trust::canonicalJson(JsonVariantConst value, String& out, const char* exclude_key) {
+// Hosted scopes sort object keys; the coordinator's outer request and response
+// signatures keep insertion order. Both use compact JSON.
+bool Trust::canonicalJson(JsonVariantConst value, String& out, const char* exclude_key,
+                          bool sort_keys) {
   if (value.is<JsonObjectConst>()) {
     JsonObjectConst obj = value.as<JsonObjectConst>();
-    std::vector<const char*> keys;
+    std::vector<std::string> keys;
     for (JsonPairConst kv : obj) {
       const char* k = kv.key().c_str();
       if (exclude_key != nullptr && strcmp(k, exclude_key) == 0) continue;
@@ -79,17 +91,18 @@ bool Trust::canonicalJson(JsonVariantConst value, String& out, const char* exclu
                           (*c >= '0' && *c <= '9') || *c == '_';
         if (!safe) return false;
       }
-      keys.push_back(k);
+      keys.emplace_back(k);
     }
-    std::sort(keys.begin(), keys.end(),
-              [](const char* a, const char* b) { return strcmp(a, b) < 0; });
+    if (sort_keys)
+      std::sort(keys.begin(), keys.end(),
+                [](const std::string& a, const std::string& b) { return a < b; });
     out += "{";
     for (size_t i = 0; i < keys.size(); ++i) {
       if (i > 0) out += ",";
       out += "\"";
-      out += keys[i];
+      out += keys[i].c_str();
       out += "\":";
-      if (!canonicalJson(obj[keys[i]], out, nullptr)) return false;
+      if (!canonicalJson(obj[keys[i].c_str()], out, nullptr, sort_keys)) return false;
     }
     out += "}";
     return true;
@@ -100,14 +113,16 @@ bool Trust::canonicalJson(JsonVariantConst value, String& out, const char* exclu
     for (JsonVariantConst item : value.as<JsonArrayConst>()) {
       if (!first) out += ",";
       first = false;
-      if (!canonicalJson(item, out, nullptr)) return false;
+      if (!canonicalJson(item, out, nullptr, sort_keys)) return false;
     }
     out += "]";
     return true;
   }
   // Leaf (null / bool / integer / string): ArduinoJson emits the same compact
   // JSON form Python does for these types.
-  serializeJson(value, out);
+  String leaf;
+  serializeJson(value, leaf);
+  out += leaf;
   return true;
 }
 
@@ -136,6 +151,11 @@ const rc_provisioned_peer_t* Trust::verifyRequest(const char* source_id, const c
     reason = "unknown peer";
     return nullptr;
   }
+  if (std::all_of(std::begin(peer->key), std::end(peer->key),
+                  [](uint8_t byte) { return byte == 0; })) {
+    reason = "peer is not provisioned";
+    return nullptr;
+  }
 
   const char* tag_hex = auth["tag"] | "";
   const char* nonce_hex = auth["nonce"] | "";
@@ -156,7 +176,7 @@ const rc_provisioned_peer_t* Trust::verifyRequest(const char* source_id, const c
 
   // Recompute and compare the argument digest.
   String canon;
-  if (!canonicalJson(arguments, canon, nullptr)) {
+  if (!canonicalJson(arguments, canon, nullptr, false)) {
     reason = "arguments not canonicalisable";
     return nullptr;
   }
@@ -186,6 +206,87 @@ const rc_provisioned_peer_t* Trust::verifyRequest(const char* source_id, const c
     return nullptr;
   }
   return peer;
+}
+
+bool Trust::verifyHostedScope(const rc_provisioned_peer_t* peer, JsonVariantConst arguments,
+                              const char* capability, const String& device_id,
+                              const String& instance_id, String& reason) {
+  JsonVariantConst token = arguments["_scope_delegation"];
+  if (peer == nullptr || !token.is<JsonObjectConst>() || instance_id.isEmpty()) {
+    reason = "signed hosted scope required";
+    return false;
+  }
+  uint8_t supplied[32];
+  const char* tag = token["tag"] | "";
+  String canonical;
+  if (!hexDecode(tag, supplied, sizeof(supplied)) ||
+      !canonicalJson(token, canonical, "tag")) {
+    reason = "invalid hosted scope signature";
+    return false;
+  }
+  uint8_t expected[32];
+  constexpr char kScopeDomain[] = "reconclave-hosted-hid-scope-v1";
+  uint8_t scope_key[32];
+  hmacSha256(peer->key, sizeof(peer->key),
+             reinterpret_cast<const uint8_t*>(kScopeDomain), sizeof(kScopeDomain) - 1, scope_key);
+  hmacSha256(scope_key, sizeof(scope_key),
+             reinterpret_cast<const uint8_t*>(canonical.c_str()), canonical.length(), expected);
+  if (!ctEqual(expected, supplied, sizeof(expected))) {
+    reason = "invalid hosted scope signature";
+    return false;
+  }
+  const String host = arguments["host"] | "";
+  IPAddress address;
+  JsonArrayConst networks = token["included_networks"].as<JsonArrayConst>();
+  JsonArrayConst excluded = token["excluded_networks"].as<JsonArrayConst>();
+  JsonArrayConst classes = token["capability_classes"].as<JsonArrayConst>();
+  if (!address.fromString(host) || host != address.toString() ||
+      networks.size() != 1 || String(networks[0] | "") != host + "/32" ||
+      excluded.size() != 0 || classes.size() != 1 || String(classes[0] | "") != "capture" ||
+      String(token["scope_id"] | "") != "hosted:" + instance_id ||
+      String(token["project_id"] | "") != instance_id ||
+      String(token["source_node"] | "") != peer->peer_id ||
+      String(token["capability"] | "") != capability ||
+      String(token["destination_node"] | "") != device_id ||
+      String(token["host"] | "") != host) {
+    reason = "hosted scope does not match this device and computer";
+    return false;
+  }
+  String original;
+  if (!canonicalJson(arguments, original, "_scope_delegation") ||
+      String(token["arguments_digest"] | "") != sha256Hex(original)) {
+    reason = "hosted scope does not match this script";
+    return false;
+  }
+  const int64_t issued = token["issued_at_ms"] | static_cast<int64_t>(0);
+  const int64_t expires = token["expires_at_ms"] | static_cast<int64_t>(0);
+  const int64_t now = static_cast<int64_t>(time(nullptr)) * 1000;
+  if (now < 1700000000000LL || issued <= 0 || expires <= issued ||
+      expires - issued > 60000 || now < issued || now >= expires) {
+    reason = "hosted scope has expired or device clock is unavailable";
+    return false;
+  }
+  return true;
+}
+
+bool Trust::signResponse(const rc_provisioned_peer_t* peer, const char* source_id,
+                         const char* dest_id, const char* request_id, const char* status,
+                         const char* nonce_hex, JsonVariantConst body, JsonObject auth) {
+  if (peer == nullptr || nonce_hex == nullptr || nonce_hex[0] == '\0') return false;
+  String canonical_body;
+  if (!canonicalJson(body, canonical_body, nullptr, false)) return false;
+  const String digest = sha256Hex(canonical_body);
+  const String message = String(source_id) + "|" + dest_id + "|" + request_id + "|" + status +
+                         "|" + boot_nonce_hex_ + "|" + digest + "|" + nonce_hex;
+  uint8_t full[32];
+  hmacSha256(peer->key, 32, reinterpret_cast<const uint8_t*>(message.c_str()),
+             message.length(), full);
+  char tag[kTagBytes * 2 + 1];
+  toHex(full, kTagBytes, tag);
+  auth["nonce"] = nonce_hex;
+  auth["payload_digest"] = digest;
+  auth["tag"] = tag;
+  return true;
 }
 
 }  // namespace reconclave

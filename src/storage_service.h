@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <FS.h>
 #include <driver/sdmmc_types.h>
 
@@ -37,7 +38,8 @@ class StorageService {
 
   const String& armedPayload() const { return armed_; }
   bool armPayload(const String& name);
-  void recordRun(bool ok);
+  void recordRun(bool ok, const String& name);
+  void recentRunEvents(JsonArray events) const;
   uint32_t runCount() const { return run_count_; }
   uint32_t failureCount() const { return failure_count_; }
   unsigned long lastRunMs() const { return last_run_ms_; }

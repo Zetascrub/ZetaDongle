@@ -27,8 +27,13 @@ class App {
   //   wifi <ssid> <pass>   store credentials in NVS and reboot to join
   //   status               print id / link / ip
   void pollSerialCommands();
-  void runArmedPayload();
+  void runArmedPayload(TriggerSource source = TriggerSource::PhysicalButton);
+  void pollHostedCommand();
   String serial_line_;
+  unsigned long next_hosted_check_ms_{0};
+  unsigned long next_hosted_command_ms_{0};
+  bool hosted_connected_{false};
+  bool auto_run_pending_{true};
 
   UsbManager usb_;
   RadioManager radio_;

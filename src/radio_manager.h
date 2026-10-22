@@ -21,6 +21,7 @@ class RadioManager {
   // Join the fleet network (STA) if credentials are set, and advertise mDNS on
   // success. Empty credentials => STA idle, AP still up.
   bool connect(const String& ssid, const String& pass, const String& device_id, uint16_t port);
+  void poll();
 
   bool staConnected() const;
   IPAddress staIp() const;
@@ -29,7 +30,11 @@ class RadioManager {
 
  private:
   String ap_ssid_;
+  String station_ssid_;
+  String device_id_;
+  uint16_t port_ = 0;
   bool mdns_up_ = false;
+  unsigned long last_retry_ms_ = 0;
 };
 
 }  // namespace reconclave

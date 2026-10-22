@@ -8,9 +8,7 @@
 //
 // Invariant: an action capability fires only if TriggerPolicy authorises it. A
 // network trigger requires BOTH request authentication (HMAC) AND a verified
-// signed engagement scope. Until signed-scope verification is implemented
-// (milestone 2) scope_verified is always false, so HID is announced but
-// fail-closed — it can never fire unscoped.
+// signed hosted scope bound to this device, instance, USB host and script.
 #pragma once
 
 #include <Arduino.h>
@@ -24,11 +22,11 @@ constexpr int kLedClock = 39;  // APA102 clock
 constexpr int kBacklight = 38; // ST7735 backlight, active-low
 }  // namespace pins
 
-enum class TriggerSource { PhysicalButton, Network, Timer, Unknown };
+enum class TriggerSource { PhysicalButton, UsbAttach, Network, Timer, Unknown };
 
 // Context for an authorisation decision. For a network trigger, both flags must
-// be true; the node sets `authenticated` after the HMAC check and (in a future
-// milestone) `scope_verified` after checking the signed scope-delegation token.
+// be true; the node sets `authenticated` after the HMAC check and
+// `scope_verified` after checking the signed hosted scope token.
 struct TriggerContext {
   TriggerSource source{TriggerSource::Unknown};
   bool authenticated{false};
@@ -39,7 +37,7 @@ class TriggerPolicy {
  public:
   bool authorize(const char* capability_id, const TriggerContext& ctx, String& reason) const {
     (void)capability_id;
-    if (ctx.source == TriggerSource::PhysicalButton) return true;
+    if (ctx.source == TriggerSource::PhysicalButton || ctx.source == TriggerSource::UsbAttach) return true;
     if (ctx.source == TriggerSource::Network) {
       if (!ctx.authenticated) {
         reason = "request not authenticated";
